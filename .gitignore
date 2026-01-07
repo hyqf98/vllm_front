@@ -5,5 +5,8 @@ out
 .eslintcache
 *.log*
 .vscode
-.idea
+.idea/
 build
+.idea
+.claude
+.release/
