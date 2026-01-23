@@ -86,6 +86,20 @@ const datasourceAPI = {
     ipcRenderer.invoke('datasource:testSpeed', serverId, url)
 }
 
+// 文件管理API
+const fileManagerAPI = {
+  listDirectory: (serverId, path) =>
+    ipcRenderer.invoke('fileManager:listDirectory', serverId, path),
+  createDirectory: (serverId, parentPath, name) =>
+    ipcRenderer.invoke('fileManager:createDirectory', serverId, parentPath, name),
+  createFile: (serverId, parentPath, name) =>
+    ipcRenderer.invoke('fileManager:createFile', serverId, parentPath, name),
+  rename: (serverId, oldPath, newName) =>
+    ipcRenderer.invoke('fileManager:rename', serverId, oldPath, newName),
+  delete: (serverId, paths) =>
+    ipcRenderer.invoke('fileManager:delete', serverId, paths)
+}
+
 contextBridge.exposeInMainWorld('api', {
   ssh: sshAPI,
   service: serviceAPI,
@@ -94,7 +108,8 @@ contextBridge.exposeInMainWorld('api', {
   data: dataAPI,
   modelHub: modelHubAPI,
   modelTest: modelTestAPI,
-  datasource: datasourceAPI
+  datasource: datasourceAPI,
+  fileManager: fileManagerAPI
 })
 
 // 暴露 electron 对象用于事件监听（主要用于下载进度和模型测试流式输出）

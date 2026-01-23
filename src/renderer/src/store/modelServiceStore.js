@@ -75,19 +75,20 @@ export const useModelServiceStore = defineStore('modelService', () => {
   /**
    * 更新服务状态
    */
-  const updateServiceStatus = (id, status, pid = null) => {
-    const service = services.value.find(s => s.id === id)
-    if (service) {
-      service.status = status
-      if (pid !== null) {
-        service.pid = pid
+      const updateServiceStatus = (id, status, pid = null) => {
+        const service = services.value.find(s => s.id === id)
+        if (service) {
+          service.status = status
+          if (pid !== null) {
+            service.pid = pid
+          }
+          // 状态变化时保存，不等待完成
+          saveServices().catch(error => {
+            console.error(`更新服务 ${id} 状态到 ${status} 时保存失败:`, error)
+          })
+        }
       }
-      // 状态变化时保存
-      saveServices()
-    }
-  }
-
-  /**
+    /**
    * 根据服务器ID获取服务列表
    */
   const getServicesByServerId = (serverId) => {

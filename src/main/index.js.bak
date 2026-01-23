@@ -471,21 +471,16 @@ function setupIPCHandlers() {
   // 模型市场：开始下载
   ipcMain.handle('modelHub:startDownload', async (event, downloadConfig) => {
     try {
-      console.log('[modelHub:startDownload] 收到下载请求，downloadId:', downloadConfig.downloadId)
-
       // 确保服务器已加载到 ssh-manager
       await ensureServerLoaded(downloadConfig.serverId)
 
       const mainWindow = BrowserWindow.fromWebContents(event.sender)
-      console.log('[modelHub:startDownload] mainWindow:', mainWindow ? '存在' : '不存在')
-
       const result = await sshManager.downloadModel({
         ...downloadConfig,
         mainWindow
       })
       return { success: true, data: result }
     } catch (error) {
-      console.error('[modelHub:startDownload] 错误:', error)
       return { success: false, error: error.message }
     }
   })
@@ -645,59 +640,5 @@ function setupIPCHandlers() {
       return { success: false, error: error.message }
     }
   })
-
-  // 文件管理：列出目录
-  ipcMain.handle('fileManager:listDirectory', async (event, serverId, path) => {
-    try {
-      await ensureServerLoaded(serverId)
-      const result = await sshManager.listDirectory(serverId, path)
-      return result
-    } catch (error) {
-      return { success: false, error: error.message }
-    }
-  })
-
-  // 文件管理：创建目录
-  ipcMain.handle('fileManager:createDirectory', async (event, serverId, parentPath, name) => {
-    try {
-      await ensureServerLoaded(serverId)
-      const result = await sshManager.createDirectory(serverId, parentPath, name)
-      return result
-    } catch (error) {
-      return { success: false, error: error.message }
-    }
-  })
-
-  // 文件管理：创建文件
-  ipcMain.handle('fileManager:createFile', async (event, serverId, parentPath, name) => {
-    try {
-      await ensureServerLoaded(serverId)
-      const result = await sshManager.createFile(serverId, parentPath, name)
-      return result
-    } catch (error) {
-      return { success: false, error: error.message }
-    }
-  })
-
-  // 文件管理：重命名
-  ipcMain.handle('fileManager:rename', async (event, serverId, oldPath, newName) => {
-    try {
-      await ensureServerLoaded(serverId)
-      const result = await sshManager.rename(serverId, oldPath, newName)
-      return result
-    } catch (error) {
-      return { success: false, error: error.message }
-    }
-  })
-
-  // 文件管理：删除
-  ipcMain.handle('fileManager:delete', async (event, serverId, paths) => {
-    try {
-      await ensureServerLoaded(serverId)
-      const result = await sshManager.delete(serverId, paths)
-      return result
-    } catch (error) {
-      return { success: false, error: error.message }
-    }
   })
 }

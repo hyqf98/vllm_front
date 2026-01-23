@@ -255,7 +255,9 @@ const setupProgressListener = (taskId) => {
   // 监听日志事件
   const logHandler = (event, data) => {
     console.log('[DownloadDialog] 收到日志事件:', data)
+    console.log('[DownloadDialog] 当前日志数量:', downloadProgress.value.logs.length)
     downloadProgress.value.logs.push(data.log)
+    console.log('[DownloadDialog] 添加日志后数量:', downloadProgress.value.logs.length)
     modelHubStore.updateDownloadProgress(taskId, { log: data.log })
   }
 
@@ -264,6 +266,8 @@ const setupProgressListener = (taskId) => {
 
   window.electron.ipcRenderer.on(`download:progress:${taskId}`, progressHandler)
   window.electron.ipcRenderer.on(`download:log:${taskId}`, logHandler)
+
+  console.log('[DownloadDialog] 监听器已设置，当前监听器数量:', window.electron.ipcRenderer.listenerCount(`download:log:${taskId}`))
 
   // 保存处理器引用用于清理
   currentTaskId.value = {

@@ -12,6 +12,27 @@ class DataManager {
     this.userHomePath = app.getPath('home')
     // 在用户根目录下创建应用数据目录（隐藏目录）
     this.dataDir = join(this.userHomePath, '.vllm_front')
+    // 写入锁，用于防止并发写入同一文件
+    this.writeLocks = new Map()
+  }
+
+  /**
+   * 获取文件锁
+   * @param {string} moduleName
+   */
+  async acquireLock(moduleName) {
+    while (this.writeLocks.get(moduleName)) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    this.writeLocks.set(moduleName, true)
+  }
+
+  /**
+   * 释放文件锁
+   * @param {string} moduleName
+   */
+  releaseLock(moduleName) {
+    this.writeLocks.delete(moduleName)
   }
 
   /**
@@ -73,7 +94,6 @@ class DataManager {
 
       // 检查内容是否为空
       if (!content || content.trim() === '') {
-        console.warn(`数据文件为空 [${moduleName}]，返回默认值`)
         return defaultValue
       }
 
@@ -160,114 +180,84 @@ class DataManager {
    * 写入数据
    * @param {string} moduleName - 模块名称
    * @param {any} data - 要写入的数据
-   * @returns {Promise<boolean>} 是否成功
+   * @returns {Promise<{success: boolean, error?: string}>} 写入结果
    */
   async writeData(moduleName, data) {
     const filePath = this.getDataFilePath(moduleName)
-    const tempFilePath = filePath + '.tmp'
+    // 为每个模块使用唯一的临时文件，进一步减少冲突
+    const tempFilePath = filePath + '.' + Date.now() + '.tmp'
+
+    await this.acquireLock(moduleName)
 
     try {
-      console.log(`[DataManager] 开始写入数据 [${moduleName}]`)
-      console.log(`[DataManager] 数据目录: ${this.dataDir}`)
-      console.log(`[DataManager] 文件路径: ${filePath}`)
-      console.log(`[DataManager] 临时文件路径: ${tempFilePath}`)
-
       // 确保目录存在
       await this.ensureDataDir()
-
-      // 再次确认目录存在（防止竞争条件）
-      try {
-        await fs.access(this.dataDir)
-        console.log(`[DataManager] 目录已存在`)
-      } catch {
-        console.log(`[DataManager] 目录不存在，创建目录`)
-        await fs.mkdir(this.dataDir, { recursive: true })
-      }
 
       // 序列化数据
       let content
       try {
         content = JSON.stringify(data, null, 2)
-        console.log(`[DataManager] 序列化成功，内容长度: ${content.length}`)
       } catch (serializeError) {
-        console.error(`[DataManager] 序列化失败 [${moduleName}]:`, serializeError)
         throw new Error(`数据序列化失败: ${serializeError.message}`)
       }
 
       // 先写入临时文件
-      console.log(`[DataManager] 写入临时文件: ${tempFilePath}`)
       await fs.writeFile(tempFilePath, content, 'utf-8')
-      console.log(`[DataManager] 临时文件写入成功`)
 
-      // 验证临时文件是否创建成功并验证 JSON 格式
-      await fs.access(tempFilePath)
-      console.log(`[DataManager] 临时文件存在验证通过`)
-
+      // 验证临时文件 JSON 有效性
       const tempContent = await fs.readFile(tempFilePath, 'utf-8')
-      console.log(`[DataManager] 临时文件读取成功，长度: ${tempContent.length}`)
+      JSON.parse(tempContent)
 
-      JSON.parse(tempContent) // 验证 JSON 有效性
-      console.log(`[DataManager] 临时文件 JSON 验证通过`)
-
-      // 删除旧文件（如果存在）
-      try {
-        await fs.unlink(filePath)
-        console.log(`[DataManager] 旧文件已删除`)
-      } catch (e) {
-        if (e.code === 'ENOENT') {
-          console.log(`[DataManager] 旧文件不存在，跳过删除`)
-        } else {
-          console.warn(`[DataManager] 删除旧文件失败:`, e.message)
-        }
-      }
-
-      // 重命名到目标文件
+      // 直接重命名到目标文件（原子操作）
       await fs.rename(tempFilePath, filePath)
-      console.log(`[DataManager] 文件重命名成功`)
 
       // 创建备份文件
       try {
         await fs.writeFile(filePath + '.bak', content, 'utf-8')
-        console.log(`[DataManager] 备份文件创建成功`)
       } catch (backupError) {
         console.warn(`[DataManager] 创建备份失败 [${moduleName}]:`, backupError.message)
       }
 
-      console.log(`[DataManager] 写入完成 [${moduleName}]`)
-
-      return true
+      return { success: true }
     } catch (error) {
       console.error(`[DataManager] 写入数据失败 [${moduleName}]:`, error)
-      console.error(`[DataManager] 错误类型: ${error.name}`)
-      console.error(`[DataManager] 错误消息: ${error.message}`)
-      console.error(`[DataManager] 错误堆栈: ${error.stack}`)
-
-      // 清理可能残留的临时文件
+      
+      // 清理临时文件
       try {
         await fs.unlink(tempFilePath)
-        console.log(`[DataManager] 临时文件已清理`)
       } catch {}
 
-      return false
+      return { success: false, error: error.message }
+    } finally {
+      this.releaseLock(moduleName)
     }
   }
 
   /**
    * 删除数据
    * @param {string} moduleName - 模块名称
-   * @returns {Promise<boolean>} 是否成功
+   * @returns {Promise<{success: boolean, error?: string}>} 写入结果
    */
   async deleteData(moduleName) {
+    await this.acquireLock(moduleName)
     try {
       const filePath = this.getDataFilePath(moduleName)
-      await fs.unlink(filePath)
-      return true
-    } catch (error) {
-      if (error.code === 'ENOENT') {
-        return true // 文件不存在，认为删除成功
+      try {
+        await fs.unlink(filePath)
+      } catch (e) {
+        if (e.code !== 'ENOENT') throw e
       }
+      try {
+        await fs.unlink(filePath + '.bak')
+      } catch (e) {
+        if (e.code !== 'ENOENT') {}
+      }
+      return { success: true }
+    } catch (error) {
       console.error(`删除数据失败 [${moduleName}]:`, error)
-      return false
+      return { success: false, error: error.message }
+    } finally {
+      this.releaseLock(moduleName)
     }
   }
 
@@ -310,7 +300,7 @@ class DataManager {
 
   /**
    * 清空所有数据
-   * @returns {Promise<boolean>} 是否成功
+   * @returns {Promise<{success: boolean, error?: string}>}
    */
   async clearAllData() {
     try {
@@ -318,35 +308,32 @@ class DataManager {
       for (const module of modules) {
         await this.deleteData(module)
       }
-      return true
+      return { success: true }
     } catch (error) {
       console.error('清空数据失败:', error)
-      return false
+      return { success: false, error: error.message }
     }
   }
 
   /**
    * 清空所有数据并删除目录
-   * @returns {Promise<boolean>} 是否成功
+   * @returns {Promise<{success: boolean, error?: string}>}
    */
   async clearAllDataAndDirectory() {
     try {
-      const fs2 = await import('fs')
-      const { promises } = fs2
-
       // 先清空所有文件
       await this.clearAllData()
 
       // 删除整个目录
-      await promises.rm(this.dataDir, { recursive: true, force: true })
+      await fs.rm(this.dataDir, { recursive: true, force: true })
 
       // 重新创建目录
       await this.ensureDataDir()
 
-      return true
+      return { success: true }
     } catch (error) {
       console.error('清空数据和目录失败:', error)
-      return false
+      return { success: false, error: error.message }
     }
   }
 }

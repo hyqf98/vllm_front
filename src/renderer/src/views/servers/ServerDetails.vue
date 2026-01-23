@@ -302,6 +302,26 @@
       </div>
     </div>
 
+    <!-- 文件管理区域 -->
+    <el-divider style="margin: 20px 0;" />
+    <div class="file-manager-section">
+      <div class="section-header">
+        <h3>文件管理</h3>
+      </div>
+
+      <div class="file-manager-container">
+        <FileManager
+          v-if="detailPageConnectionStatus === 'connected'"
+          :server-id="server?.id"
+        />
+        <div v-else class="connect-prompt">
+          <el-empty description="请先连接服务器以使用文件管理功能">
+            <el-button type="primary" @click="connectToServer">立即连接</el-button>
+          </el-empty>
+        </div>
+      </div>
+    </div>
+
     <!-- 新增/编辑环境对话框 -->
     <el-dialog
       v-model="envDialogVisible"
@@ -421,6 +441,7 @@ import { useServerStore } from '@renderer/store/serverStore'
 import { useEnvironmentStore } from '@renderer/store/environmentStore'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Connection, Plus, Edit, Delete, FolderOpened } from '@element-plus/icons-vue'
+import FileManager from '@renderer/components/FileManager.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -1467,6 +1488,39 @@ onUnmounted(async () => {
         align-items: center;
         flex-shrink: 0;
         min-height: 56px;
+      }
+    }
+  }
+
+  .file-manager-section {
+    flex-shrink: 0;
+    margin-bottom: 40px;
+
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+
+      h3 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+      }
+    }
+
+    .file-manager-container {
+      background: #fff;
+      border-radius: 12px;
+      border: 1px solid #e4e7ed;
+      overflow: hidden;
+      min-height: 400px;
+
+      .connect-prompt {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 400px;
       }
     }
   }

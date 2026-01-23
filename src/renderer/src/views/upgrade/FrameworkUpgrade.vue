@@ -437,7 +437,11 @@ const handleBatchUpgrade = async () => {
     const packageNames = selectedPackages.value.map(p => p.name).join(', ')
 
     await ElMessageBox.confirm(
-      `确定要升级以下 ${selectedPackages.value.length} 个包吗？\n\n${packageNames}\n\n这将从 PyPI 升级这些包到最新版本，可能需要较长时间。`,
+      `确定要升级以下 ${selectedPackages.value.length} 个包吗？
+
+${packageNames}
+
+这将从 PyPI 升级这些包到最新版本，可能需要较长时间。`,
       '批量升级确认',
       {
         confirmButtonText: '确定升级',
@@ -737,7 +741,7 @@ const getInstallCommands = (packageName, env, isUpgrade = false) => {
     return [
       `uv pip ${action} ${packageName}`,
       `~/.local/bin/uv pip ${action} ${packageName}`,
-      `${pipPath} ${action} ${packageName}`
+      `${pipPath} pip ${action} ${packageName}`
     ]
   }
   return [

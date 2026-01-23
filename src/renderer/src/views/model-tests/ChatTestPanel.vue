@@ -125,18 +125,7 @@ const handleSend = async (content) => {
       assistantMsg.content = response
     }
 
-    // 标记流式完成并触发响应式更新
-    // 重新创建消息对象以确保 Vue 检测到变化
-    const completedMsgIndex = messages.value.findIndex(m => m.id === assistantMsg.id)
-    if (completedMsgIndex !== -1) {
-      messages.value[completedMsgIndex] = {
-        ...assistantMsg,
-        streaming: false
-      }
-      // 强制触发更新
-      messages.value = [...messages.value]
-    }
-
+    assistantMsg.streaming = false
     thinking.value = false
 
     // 保存助手回复到历史
@@ -151,17 +140,7 @@ const handleSend = async (content) => {
     })
   } catch (error) {
     assistantMsg.content = `错误: ${error.message}`
-
-    // 重新创建消息对象以触发更新
-    const errorMsgIndex = messages.value.findIndex(m => m.id === assistantMsg.id)
-    if (errorMsgIndex !== -1) {
-      messages.value[errorMsgIndex] = {
-        ...assistantMsg,
-        streaming: false
-      }
-      messages.value = [...messages.value]
-    }
-
+    assistantMsg.streaming = false
     thinking.value = false
     ElMessage.error(`发送失败: ${error.message}`)
   } finally {
@@ -285,14 +264,13 @@ watch(() => props.testId, (newTestId) => {
           <!-- 助手消息 - 使用 XMarkdown 渲染 -->
           <div v-else class="assistant-message">
             <!-- 流式过程中显示纯文本 + 思考动画 -->
-            <div v-show="message.streaming" class="streaming-content">
+            <div v-if="message.streaming" class="streaming-content">
               <Thinking :loading="true" />
               <div class="content-text">{{ message.content }}</div>
             </div>
-            <!-- 流式完成后渲染 Markdown - key 包含 streaming 状态以确保重新渲染 -->
+            <!-- 流式完成后渲染 Markdown -->
             <XMarkdown
-              v-show="!message.streaming && message.content"
-              :key="`${message._id}-${message.streaming}`"
+              v-else-if="message.content"
               :markdown="message.content"
               code-highlight-theme="github-dark"
               default-theme-mode="dark"

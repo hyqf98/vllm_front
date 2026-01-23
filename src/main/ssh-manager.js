@@ -561,7 +561,6 @@ class SSHManager {
       conn
         .on('ready', () => {
           this.connections.set(serverId, conn)
-          console.log(`[SSH Manager] SSH连接成功: ${serverId}`)
           resolve({ success: true, message: '连接成功' })
         })
         .on('error', (err) => {
@@ -570,7 +569,6 @@ class SSHManager {
         })
         .on('close', () => {
           this.connections.delete(serverId)
-          console.log(`[SSH Manager] SSH连接关闭: ${serverId}`)
         })
         .connect(sshConfig)
     })
@@ -616,7 +614,6 @@ class SSHManager {
         this.connections.set(serverId, conn)
       } else {
         // SSH 类型：尝试自动建立连接
-        console.log(`[SSH Manager] 自动建立SSH连接: ${serverId}`)
         const connectResult = await this.connect({
           serverId: server.id,
           type: server.type || 'ssh',
@@ -801,14 +798,16 @@ class SSHManager {
    * @returns {Promise<string|null>} 命令的绝对路径，如果找不到返回 null
    */
   async findCommandPath(serverId, commandName) {
-    console.log(`[SSH Manager] 查找命令 ${commandName} 的路径`)
+    // 针对 conda 命令的特殊处理
+    if (commandName === 'conda') {
+      return await this.findCondaPath(serverId)
+    }
 
     // 方法1: 使用 which 在登录 shell 中查找
     const whichResult = await this.execCommand(serverId, `bash -l -c "which ${commandName}"`)
-    
+
     if (whichResult.success && whichResult.stdout && whichResult.stdout.trim()) {
       const path = whichResult.stdout.trim().split('\n')[0]
-      console.log(`[SSH Manager] which 找到路径: ${path}`)
       return path
     }
 
@@ -819,7 +818,6 @@ class SSHManager {
       const matches = typeResult.stdout.match(/is\s+(\/[^\s]+)/g)
       if (matches && matches.length > 0) {
         const path = matches[0].replace('is ', '').trim()
-        console.log(`[SSH Manager] type -a 找到路径: ${path}`)
         return path
       }
     }
@@ -847,6 +845,116 @@ class SSHManager {
     }
 
     console.log(`[SSH Manager] 未找到命令 ${commandName}`)
+    return null
+  }
+
+  /**
+   * 专门用于查找 conda 路径的方法
+   * @param {string} serverId - 服务器ID
+   * @returns {Promise<string|null>} conda 的绝对路径，如果找不到返回 null
+   */
+  async findCondaPath(serverId) {
+    console.log('[SSH Manager] 开始查找 conda 路径...')
+
+    // 方法1: 使用 which 在登录 shell 中查找
+    const whichResult = await this.execCommand(serverId, `bash -l -c "which conda"`)
+    if (whichResult.success && whichResult.stdout && whichResult.stdout.trim() && !whichResult.stdout.includes('not found')) {
+      const path = whichResult.stdout.trim().split('\n')[0]
+      console.log(`[SSH Manager] 通过 which 找到 conda: ${path}`)
+      return path
+    }
+
+    // 方法2: 尝试使用 source 初始化后查找
+    const sourceCommands = [
+      'bash -c "source ~/.bashrc && which conda 2>/dev/null"',
+      'bash -c "source ~/.bash_profile && which conda 2>/dev/null"',
+      'bash -c "source ~/.zshrc && which conda 2>/dev/null"',
+      'bash -l -c "source ~/.bashrc && which conda 2>/dev/null"'
+    ]
+
+    for (const cmd of sourceCommands) {
+      try {
+        const result = await this.execCommand(serverId, cmd)
+        if (result.success && result.stdout && result.stdout.trim() && !result.stdout.includes('not found')) {
+          const path = result.stdout.trim().split('\n')[0]
+          console.log(`[SSH Manager] 通过 source 初始化找到 conda: ${path}`)
+          return path
+        }
+      } catch (e) {
+        // 继续尝试下一个
+      }
+    }
+
+    // 方法3: 直接在 conda 常见安装位置查找
+    const condaLocations = [
+      '~/miniconda3/bin/conda',
+      '~/anaconda3/bin/conda',
+      '~/miniforge3/bin/conda',
+      '~/.conda/bin/conda',
+      '/opt/miniconda3/bin/conda',
+      '/opt/anaconda3/bin/conda',
+      '/opt/miniforge3/bin/conda',
+      '/usr/local/conda/bin/conda',
+      '/usr/local/miniconda3/bin/conda',
+      '/usr/local/anaconda3/bin/conda',
+      '~/miniconda/bin/conda',
+      '~/anaconda/bin/conda',
+      '/opt/miniconda/bin/conda',
+      '/opt/anaconda/bin/conda'
+    ]
+
+    for (const location of condaLocations) {
+      try {
+        // 使用 test -f 检查文件是否存在
+        const testResult = await this.execCommand(serverId, `test -f ${location} && echo "exists"`)
+        if (testResult.success && testResult.stdout && testResult.stdout.includes('exists')) {
+          // 展开波浪号获取完整路径
+          const expandedResult = await this.execCommand(serverId, `echo ${location}`)
+          if (expandedResult.success && expandedResult.stdout) {
+            const expandedPath = expandedResult.stdout.trim()
+            console.log(`[SSH Manager] 在常见位置找到 conda: ${expandedPath}`)
+            return expandedPath
+          }
+        }
+      } catch (e) {
+        // 继续尝试下一个
+      }
+    }
+
+    // 方法4: 通过查找环境目录来推断 conda 路径
+    // 如果有环境目录，可以推断出 conda 的位置
+    const envBasePaths = [
+      '~/miniconda3/envs',
+      '~/anaconda3/envs',
+      '~/miniforge3/envs',
+      '/opt/miniconda3/envs',
+      '/opt/anaconda3/envs',
+      '/opt/miniforge3/envs'
+    ]
+
+    for (const envPath of envBasePaths) {
+      try {
+        const testResult = await this.execCommand(serverId, `test -d ${envPath} && echo "exists"`)
+        if (testResult.success && testResult.stdout && testResult.stdout.includes('exists')) {
+          // 推断 conda 路径（envs 目录的上一级/bin/conda）
+          const condaPath = envPath.replace('/envs', '/bin/conda')
+          const expandedResult = await this.execCommand(serverId, `echo ${condaPath}`)
+          if (expandedResult.success && expandedResult.stdout) {
+            const expandedPath = expandedResult.stdout.trim()
+            // 验证 conda 文件确实存在
+            const verifyResult = await this.execCommand(serverId, `test -f ${expandedPath} && echo "verified"`)
+            if (verifyResult.success && verifyResult.stdout && verifyResult.stdout.includes('verified')) {
+              console.log(`[SSH Manager] 通过环境目录推断找到 conda: ${expandedPath}`)
+              return expandedPath
+            }
+          }
+        }
+      } catch (e) {
+        // 继续尝试下一个
+      }
+    }
+
+    console.log('[SSH Manager] 未找到 conda 命令')
     return null
   }
 
@@ -998,8 +1106,6 @@ class SSHManager {
    * @returns {Promise<Object>} 检测结果 { success: true, data: { conda: [], uv: [], system: [] } }
    */
   async detectEnvironments(serverId) {
-    console.log('[SSH Manager] 开始检测服务器环境:', serverId)
-
     const result = {
       conda: [],
       uv: [],
@@ -1053,12 +1159,6 @@ class SSHManager {
       console.log('[SSH Manager] 系统 python 检测失败:', error.message)
     }
 
-    console.log('[SSH Manager] 环境检测完成:', {
-      conda: result.conda.length,
-      uv: result.uv.length,
-      system: result.system.length
-    })
-
     return { success: true, data: result }
   }
 
@@ -1069,8 +1169,6 @@ class SSHManager {
    * @returns {Promise<Object>} 环境列表 { success: true, data: ['base', 'env1', ...] }
    */
   async getCondaEnvironments(serverId, condaPath) {
-    console.log('[SSH Manager] 获取 conda 环境列表:', serverId, condaPath)
-
     try {
       const condaBin = condaPath.endsWith('/bin/conda') ? condaPath : `${condaPath}/bin/conda`
       const result = await this.execCommand(serverId, `${condaBin} env list`)
@@ -1191,46 +1289,18 @@ class SSHManager {
     // 对于 conda，需要先初始化 conda 环境
     let fullCommand = ''
     if (envType === 'conda' && envName) {
-      // 找到 conda 的安装路径
-      let condaPath = null
-      const possibleCondaPaths = [
-        'conda',  // 系统路径
-        '~/miniconda3/bin/conda',
-        '~/anaconda3/bin/conda',
-        '~/miniforge3/bin/conda',
-        '/opt/miniconda3/bin/conda',
-        '/opt/anaconda3/bin/conda',
-        '/opt/miniforge3/bin/conda',
-        '~/.conda/bin/conda'
-      ]
-
-      // 检测 conda 路径（使用 source ~/.bashrc 的方式）
-      for (const path of possibleCondaPaths) {
-        try {
-          // 使用 bash -l -c 来加载登录 shell 配置，这样 conda 会被初始化
-          const testCmd = path === 'conda'
-            ? `bash -l -c "conda --version"`
-            : `bash -l -c "${path} --version"`
-
-          const testResult = await this.execCommand(serverId, testCmd)
-          if (testResult.success && !testResult.stderr.includes('not found') && !testResult.stderr.includes('未找到')) {
-            condaPath = path
-            console.log(`[startService] 找到 conda: ${condaPath}`)
-            break
-          }
-        } catch (e) {
-          // 继续尝试下一个
-        }
-      }
+      // 使用统一的 findCondaPath 方法查找 conda
+      const condaPath = await this.findCondaPath(serverId)
 
       if (!condaPath) {
-        throw new Error('未找到 conda 安装，请确保 conda 已正确安装并在 PATH 中，或者手动指定 conda 路径')
+        throw new Error('未找到 conda 安装，请确保 conda 已正确安装')
       }
 
-      // 构建启动命令
-      // 使用 bash -l 来加载登录 shell 配置，这样 conda 环境会被正确初始化
-      const condaBaseCmd = condaPath === 'conda' ? 'conda' : condaPath
-      fullCommand = `bash -l -c "${gpuEnvVar}${condaBaseCmd} run -n ${envName} --no-capture-output ${cleanCommand} > ${logPath} 2>&1 &"`
+      const condaBin = condaPath.endsWith('conda') ? condaPath : `${condaPath}/conda`
+      console.log(`[startService] 使用 conda 路径: ${condaBin}`)
+
+      // 在指定的 conda 环境中启动服务
+      fullCommand = `bash -l -c "${gpuEnvVar}${condaBin} run -n ${envName} --no-capture-output ${cleanCommand} > ${logPath} 2>&1 &"`
     } else if (envType === 'uv' && envName) {
       // UV 环境使用虚拟环境的 python
       fullCommand = `bash -c "${gpuEnvVar}${envName}/bin/python -m ${cleanCommand} > ${logPath} 2>&1 &"`
@@ -2031,9 +2101,38 @@ class SSHManager {
    * @returns {Promise<Object>} 服务器信息
    */
   async getServerInfo(serverId) {
-    const conn = this.connections.get(serverId)
+    let conn = this.connections.get(serverId)
+
+    // 如果连接不存在，尝试自动建立连接
     if (!conn) {
-      throw new Error('服务器未连接，请先连接服务器')
+      const server = this.getServerById(serverId)
+
+      if (!server) {
+        throw new Error(`服务器 ${serverId} 不存在`)
+      }
+
+      if (server.type === 'localhost') {
+        // localhost 类型自动建立连接
+        conn = { type: 'localhost' }
+        this.connections.set(serverId, conn)
+      } else {
+        // SSH 类型：尝试自动建立连接
+        const connectResult = await this.connect({
+          serverId: server.id,
+          type: server.type || 'ssh',
+          host: server.host,
+          port: server.port,
+          username: server.username,
+          password: server.password,
+          privateKey: server.privateKey
+        })
+
+        if (!connectResult.success) {
+          throw new Error(`自动连接失败: ${connectResult.message}`)
+        }
+
+        conn = this.connections.get(serverId)
+      }
     }
 
     try {
@@ -2052,7 +2151,6 @@ class SSHManager {
 
         // 映射系统类型到脚本类型
         const scriptType = this.getScriptType(systemType, osType)
-        console.log(`[SSHManager] 系统[${serverId}] 类型: systemType=${systemType}, osType=${osType}, scriptType=${scriptType}`)
 
         jsonOutput = await this.getServerInfoByScript(serverId, scriptType)
       }
@@ -2250,11 +2348,19 @@ class SSHManager {
 
     let fullCommand = ''
     if (envType === 'conda' && envName) {
-      // 使用 conda run 执行升级命令
-      fullCommand = `conda run -n ${envName} --no-capture-output ${upgradeCmd}`
+      // 使用统一的 findCondaPath 方法查找 conda
+      const condaPath = await this.findCondaPath(serverId)
+
+      if (!condaPath) {
+        throw new Error('未找到 conda 安装，请确保 conda 已正确安装')
+      }
+
+      const condaBin = condaPath.endsWith('conda') ? condaPath : `${condaPath}/conda`
+      // 在指定的 conda 环境中执行升级命令
+      fullCommand = `${condaBin} run -n ${envName} --no-capture-output ${upgradeCmd}`
     } else if (envType === 'uv' && envName) {
       // UV 环境使用虚拟环境的 pip
-      fullCommand = `${envName}/bin/pip ${upgradeCmd.replace('pip install', 'install')}`
+      fullCommand = `${envName}/bin/uv pip ${upgradeCmd.replace('pip install ', '')}`
     } else {
       fullCommand = upgradeCmd
     }
@@ -2276,11 +2382,24 @@ class SSHManager {
    * @param {string} envName - 环境名称
    */
   async getFrameworkVersion(serverId, framework, envType, envName) {
-    const command = envType === 'conda'
-      ? `conda run -n ${envName} --no-capture-output pip show ${framework} | grep Version`
-      : envType === 'uv'
-      ? `${envName}/bin/pip show ${framework} | grep Version`
-      : `pip show ${framework} | grep Version`
+    let command = ''
+
+    if (envType === 'conda') {
+      // 使用统一的 findCondaPath 方法查找 conda
+      const condaPath = await this.findCondaPath(serverId)
+
+      if (!condaPath) {
+        return '未知'
+      }
+
+      const condaBin = condaPath.endsWith('conda') ? condaPath : `${condaPath}/conda`
+      // 在指定的 conda 环境中执行命令
+      command = `${condaBin} run -n ${envName} --no-capture-output pip show ${framework} | grep Version`
+    } else if (envType === 'uv') {
+      command = `${envName}/bin/pip show ${framework} | grep Version`
+    } else {
+      command = `pip show ${framework} | grep Version`
+    }
 
     const result = await this.execCommand(serverId, command)
 
@@ -2312,68 +2431,158 @@ class SSHManager {
   }
 
   /**
-   * 检测下载命令是否存在
+   * 检测下载命令是否存在（在指定的环境中检查）
    * @param {string} serverId - 服务器ID
    * @param {string} envType - 环境类型 (conda | uv | system)
    * @param {string} envName - 环境名称或路径
    * @param {string} command - 命令名称 (modelscope | huggingface-cli)
    */
   async checkDownloadCommand(serverId, envType, envName, command) {
-    // 准备多种检测命令的方式
-    let checkCommands = []
+    console.log(`[SSH Manager] 检测命令: envType=${envType}, envName=${envName}, command=${command}`)
 
     if (envType === 'conda' && envName) {
-      // conda 环境：尝试多种方式
-      checkCommands = [
-        // 方法1：使用 conda run + which
-        `bash -l -c "conda run -n ${envName} --no-capture-output which ${command}"`,
-        // 方法2：直接在环境目录中查找
-        `bash -l -c "ls ~/miniconda3/envs/${envName}/bin/${command} 2>/dev/null || ls ~/anaconda3/envs/${envName}/bin/${command} 2>/dev/null || ls ~/miniforge3/envs/${envName}/bin/${command} 2>/dev/null"`,
-        // 方法3：使用 conda run + command --version
-        `bash -l -c "conda run -n ${envName} --no-capture-output ${command} --version 2>&1 | head -1"`
-      ]
+      // conda 环境：在该环境中检查命令是否存在
+      return await this.checkCondaEnvironmentCommand(serverId, envName, command)
     } else if (envType === 'uv' && envName) {
-      // uv 环境：尝试多种方式
-      const moduleName = command === 'modelscope' ? 'modelscope' : 'huggingface_hub'
-      checkCommands = [
-        // 方法1：使用 python -m shutil.which
-        `bash -l -c "${envName}/bin/python -c 'import shutil; print(shutil.which(\\\"${command}\\\") or \\\"\\\")'"`,
-        // 方法2：直接在 uv 环境目录中查找
-        `bash -l -c "ls ${envName}/bin/${command} 2>/dev/null"`,
-        // 方法3：使用 python -m 方式检测模块是否存在
-        `bash -l -c "${envName}/bin/python -c 'import ${moduleName}' 2>&1"`
-      ]
+      // uv 环境：在该环境中检查命令/模块是否存在
+      return await this.checkUVEnvironmentCommand(serverId, envName, command)
     } else {
-      // system 环境：直接查找
-      checkCommands = [
-        `bash -l -c "which ${command}"`,
-        `bash -l -c "${command} --version 2>&1 | head -1"`
-      ]
+      // system 环境：直接在系统中查找
+      return await this.checkSystemCommand(serverId, command)
+    }
+  }
+
+  /**
+   * 在指定的 conda 环境中检查命令是否存在
+   * @param {string} serverId - 服务器ID
+   * @param {string} envName - conda 环境名称
+   * @param {string} command - 命令名称
+   */
+  async checkCondaEnvironmentCommand(serverId, envName, command) {
+    // 先找到 conda 的路径
+    const condaPath = await this.findCondaPath(serverId)
+
+    if (!condaPath) {
+      console.error(`[SSH Manager] 找不到 conda 命令`)
+      return false
     }
 
-    // 尝试每种检测方式
-    for (const checkCmd of checkCommands) {
-      try {
-        const result = await this.execCommand(serverId, checkCmd)
+    const condaBin = condaPath.endsWith('conda') ? condaPath : `${condaPath}/conda`
+    console.log(`[SSH Manager] 使用 conda 路径: ${condaBin}`)
 
-        // 如果命令执行成功且有输出
-        if (result.success && result.stdout && result.stdout.trim()) {
-          const output = result.stdout.trim()
-          // 过滤掉错误信息（如 conda 的警告）
-          if (output && !output.toLowerCase().includes('error') && !output.toLowerCase().includes('not found')) {
-            return true
-          }
-        }
+    // 方法1：在指定 conda 环境中使用 which 查找命令
+    const whichCmd = `${condaBin} run -n ${envName} --no-capture-output which ${command}`
+    console.log(`[SSH Manager] 执行命令: ${whichCmd}`)
+    const whichResult = await this.execCommand(serverId, whichCmd)
 
-        // 检查 stderr，某些命令的错误信息可能有用
-        if (result.stderr && result.stderr.includes('version')) {
-          return true
-        }
-      } catch (error) {
-        // 继续尝试下一个命令
-        console.log(`[SSH Manager] 检测命令 ${command} 失败: ${error.message}`)
+    if (whichResult.success && whichResult.stdout && whichResult.stdout.trim() && !whichResult.stdout.includes('not found')) {
+      console.log(`[SSH Manager] 在 conda 环境 ${envName} 中找到 ${command}: ${whichResult.stdout.trim()}`)
+      return true
+    }
+
+    // 方法2：在指定 conda 环境中执行命令的 --version 参数
+    const versionCmd = `${condaBin} run -n ${envName} --no-capture-output ${command} --version 2>&1 | head -1`
+    console.log(`[SSH Manager] 执行命令: ${versionCmd}`)
+    const versionResult = await this.execCommand(serverId, versionCmd)
+
+    if (versionResult.success || (versionResult.stderr && versionResult.stderr.includes('version'))) {
+      const output = versionResult.stdout || versionResult.stderr
+      if (output && !output.toLowerCase().includes('command not found') && !output.toLowerCase().includes('not found')) {
+        console.log(`[SSH Manager] ${command} --version 执行成功`)
+        return true
       }
     }
+
+    // 方法3：直接在环境的 bin 目录中查找
+    const envPathCmd = `ls $(dirname ${condaBin})/envs/${envName}/bin/${command} 2>/dev/null`
+    console.log(`[SSH Manager] 执行命令: ${envPathCmd}`)
+    const pathResult = await this.execCommand(serverId, envPathCmd)
+
+    if (pathResult.success && pathResult.stdout && pathResult.stdout.trim()) {
+      console.log(`[SSH Manager] 在环境 bin 目录中找到 ${command}`)
+      return true
+    }
+
+    console.log(`[SSH Manager] 在 conda 环境 ${envName} 中未找到 ${command}`)
+    return false
+  }
+
+  /**
+   * 在指定的 uv 环境中检查命令/模块是否存在
+   * @param {string} serverId - 服务器ID
+   * @param {string} envPath - uv 环境路径
+   * @param {string} command - 命令名称
+   */
+  async checkUVEnvironmentCommand(serverId, envPath, command) {
+    console.log(`[SSH Manager] 检查 uv 环境: ${envPath}`)
+
+    // 方法1：直接在 uv 环境的 bin 目录中查找命令
+    const binCheckCmd = `ls ${envPath}/bin/${command} 2>/dev/null`
+    console.log(`[SSH Manager] 执行命令: ${binCheckCmd}`)
+    const binResult = await this.execCommand(serverId, binCheckCmd)
+
+    if (binResult.success && binResult.stdout && binResult.stdout.trim()) {
+      console.log(`[SSH Manager] 在 uv 环境 bin 目录中找到 ${command}`)
+      return true
+    }
+
+    // 方法2：使用 Python 检查模块是否已安装（modelscope 或 huggingface_hub）
+    const moduleName = command === 'modelscope' ? 'modelscope' : 'huggingface_hub'
+    const moduleCheckCmd = `${envPath}/bin/python -c "import ${moduleName}; print('${moduleName} 已安装')"`
+    console.log(`[SSH Manager] 执行命令: ${moduleCheckCmd}`)
+    const moduleResult = await this.execCommand(serverId, moduleCheckCmd)
+
+    if (moduleResult.success && moduleResult.stdout && !moduleResult.stderr.includes('ModuleNotFoundError')) {
+      console.log(`[SSH Manager] ${moduleName} 模块已安装`)
+      return true
+    }
+
+    // 方法3：使用 shutil.which 在 Python 中查找命令
+    const whichCheckCmd = `${envPath}/bin/python -c "import shutil; print(shutil.which('${command}') or '')"`
+    console.log(`[SSH Manager] 执行命令: ${whichCheckCmd}`)
+    const whichResult = await this.execCommand(serverId, whichCheckCmd)
+
+    if (whichResult.success && whichResult.stdout && whichResult.stdout.trim()) {
+      console.log(`[SSH Manager] 通过 shutil.which 找到 ${command}`)
+      return true
+    }
+
+    console.log(`[SSH Manager] 在 uv 环境 ${envPath} 中未找到 ${command}`)
+    return false
+  }
+
+  /**
+   * 在系统中检查命令是否存在
+   * @param {string} serverId - 服务器ID
+   * @param {string} command - 命令名称
+   */
+  async checkSystemCommand(serverId, command) {
+    console.log(`[SSH Manager] 检查系统命令: ${command}`)
+
+    // 方法1：使用 which 查找
+    const whichCmd = `which ${command}`
+    console.log(`[SSH Manager] 执行命令: ${whichCmd}`)
+    const whichResult = await this.execCommand(serverId, whichCmd)
+
+    if (whichResult.success && whichResult.stdout && whichResult.stdout.trim() && !whichResult.stdout.includes('not found')) {
+      console.log(`[SSH Manager] 在系统中找到 ${command}: ${whichResult.stdout.trim()}`)
+      return true
+    }
+
+    // 方法2：执行命令的 --version 参数
+    const versionCmd = `${command} --version 2>&1 | head -1`
+    console.log(`[SSH Manager] 执行命令: ${versionCmd}`)
+    const versionResult = await this.execCommand(serverId, versionCmd)
+
+    if (versionResult.success || (versionResult.stderr && versionResult.stderr.includes('version'))) {
+      const output = versionResult.stdout || versionResult.stderr
+      if (output && !output.toLowerCase().includes('command not found')) {
+        console.log(`[SSH Manager] ${command} --version 执行成功`)
+        return true
+      }
+    }
+
+    console.log(`[SSH Manager] 在系统中未找到 ${command}`)
     return false
   }
 
@@ -2383,6 +2592,9 @@ class SSHManager {
    */
   async downloadModel(config) {
     const { serverId, envType, envName, platform, modelId, installPath, downloadId, mainWindow } = config
+
+    console.log('[downloadModel] 开始下载，downloadId:', downloadId)
+    console.log('[downloadModel] mainWindow:', mainWindow ? '存在' : '不存在')
 
     // 创建安装目录
     const mkdirResult = await this.execCommand(serverId, `mkdir -p "${installPath}"`)
@@ -2394,31 +2606,52 @@ class SSHManager {
     const sendLog = (log) => {
       console.log('[下载日志]', log)
       if (mainWindow && mainWindow.webContents) {
+        console.log(`[下载日志] 发送事件: download:log:${downloadId}`)
         mainWindow.webContents.send(`download:log:${downloadId}`, { log })
+      } else {
+        console.warn('[下载日志] mainWindow 或 webContents 不存在，无法发送日志')
       }
     }
 
-    // ModelScope 和 HuggingFace CLI 下载命令
-    let downloadCmd = ''
-
-    if (platform === 'modelscope') {
-      downloadCmd = `modelscope download --model ${modelId} --local_dir "${installPath}"`
-    } else if (platform === 'huggingface') {
-      downloadCmd = `huggingface-cli download ${modelId} --local-dir "${installPath}" --local-dir-use-symlinks False`
-    }
-
-    // 根据环境类型包装命令
+    // 根据环境类型构建下载命令
     let fullCommand = ''
     if (envType === 'conda' && envName) {
-      fullCommand = `bash -l -c 'source ~/.bashrc && conda run -n ${envName} ${downloadCmd}'`
-    } else if (envType === 'uv' && envName) {
-      if (platform === 'huggingface') {
-        fullCommand = `${envName}/bin/python -m huggingface_hub.cli download ${modelId} --local-dir "${installPath}" --local-dir-use-symlinks False`
-      } else {
-        fullCommand = `${envName}/bin/python -m modelscope download --model ${modelId} --local_dir "${installPath}"`
+      // conda 环境：在指定的 conda 环境中执行下载命令
+      const condaPath = await this.findCondaPath(serverId)
+
+      if (!condaPath) {
+        throw new Error('找不到 conda 命令，请确保 conda 已安装')
       }
+
+      const condaBin = condaPath.endsWith('conda') ? condaPath : `${condaPath}/conda`
+
+      // 构建下载命令
+      let downloadCmd = ''
+      if (platform === 'modelscope') {
+        downloadCmd = `modelscope download --model ${modelId} --local_dir "${installPath}"`
+      } else if (platform === 'huggingface') {
+        downloadCmd = `huggingface-cli download ${modelId} --local-dir "${installPath}" --local-dir-use-symlinks False`
+      }
+
+      // 在指定的 conda 环境中执行
+      fullCommand = `${condaBin} run -n ${envName} --no-capture-output ${downloadCmd}`
+      sendLog(`[下载] 在 conda 环境 "${envName}" 中执行下载`)
+    } else if (envType === 'uv' && envName) {
+      // uv 环境：使用 uv 环境的 Python 执行下载
+      if (platform === 'modelscope') {
+        fullCommand = `${envName}/bin/python -m modelscope download --model ${modelId} --local_dir "${installPath}"`
+      } else if (platform === 'huggingface') {
+        fullCommand = `${envName}/bin/python -m huggingface_hub.cli download ${modelId} --local-dir "${installPath}" --local-dir-use-symlinks False`
+      }
+      sendLog(`[下载] 在 uv 环境 "${envName}" 中执行下载`)
     } else {
-      fullCommand = downloadCmd
+      // system 环境：直接执行命令
+      if (platform === 'modelscope') {
+        fullCommand = `modelscope download --model ${modelId} --local_dir "${installPath}"`
+      } else if (platform === 'huggingface') {
+        fullCommand = `huggingface-cli download ${modelId} --local-dir "${installPath}" --local-dir-use-symlinks False`
+      }
+      sendLog(`[下载] 在系统环境中执行下载`)
     }
 
     console.log('[下载] 执行命令:', fullCommand)
@@ -3007,6 +3240,162 @@ class SSHManager {
     this.serverSystemCache.clear()
     // 清理 GPU 厂商缓存
     this.gpuManager.clearAllCache()
+  }
+
+  // ==================== 文件管理 ====================
+
+  /**
+   * 列出目录内容
+   * @param {string} serverId - 服务器ID
+   * @param {string} path - 目录路径
+   */
+  async listDirectory(serverId, path) {
+    try {
+      const lsResult = await this.execCommand(serverId, `ls -la "${path}" 2>&1`)
+      if (!lsResult.success) {
+        return { success: false, error: lsResult.stderr || '无法访问目录' }
+      }
+
+      const files = []
+      const lines = lsResult.stdout.split('\n')
+
+      for (const line of lines) {
+        // 跳过空行和总计行
+        if (!line.trim() || line.startsWith('total')) {
+          continue
+        }
+
+        // 解析 ls -la 输出
+        // 格式: -rw-r--r-- 1 user group size month day time filename
+        const parts = line.trim().split(/\s+/)
+        if (parts.length < 8) {
+          continue
+        }
+
+        const permissions = parts[0]
+        const isDirectory = permissions.startsWith('d')
+        const size = parseInt(parts[4], 10) || 0
+        const month = parts[5]
+        const day = parts[6]
+        const time = parts[7]
+        const name = parts.slice(8).join(' ')
+
+        // 跳过 . 和 ..
+        if (name === '.' || name === '..') {
+          continue
+        }
+
+        // 构建完整路径
+        const fullPath = path === '/' ? `/${name}` : `${path}/${name}`.replace(/\/+/g, '/')
+
+        files.push({
+          name,
+          path: fullPath,
+          isDirectory,
+          size: isDirectory ? 0 : size,
+          permissions,
+          modifiedTime: `${month} ${day} ${time}`
+        })
+      }
+
+      return { success: true, data: files }
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  }
+
+  /**
+   * 创建目录
+   * @param {string} serverId - 服务器ID
+   * @param {string} parentPath - 父目录路径
+   * @param {string} name - 目录名称
+   */
+  async createDirectory(serverId, parentPath, name) {
+    try {
+      const fullPath = parentPath === '/' ? `/${name}` : `${parentPath}/${name}`.replace(/\/+/g, '/')
+      const result = await this.execCommand(serverId, `mkdir -p "${fullPath}"`)
+      if (result.success) {
+        return { success: true, data: { path: fullPath } }
+      }
+      return { success: false, error: result.stderr || '创建目录失败' }
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  }
+
+  /**
+   * 创建文件
+   * @param {string} serverId - 服务器ID
+   * @param {string} parentPath - 父目录路径
+   * @param {string} name - 文件名称
+   */
+  async createFile(serverId, parentPath, name) {
+    try {
+      const fullPath = parentPath === '/' ? `/${name}` : `${parentPath}/${name}`.replace(/\/+/g, '/')
+      const result = await this.execCommand(serverId, `touch "${fullPath}"`)
+      if (result.success) {
+        return { success: true, data: { path: fullPath } }
+      }
+      return { success: false, error: result.stderr || '创建文件失败' }
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  }
+
+  /**
+   * 重命名文件或目录
+   * @param {string} serverId - 服务器ID
+   * @param {string} oldPath - 旧路径
+   * @param {string} newName - 新名称
+   */
+  async rename(serverId, oldPath, newName) {
+    try {
+      // 提取父目录路径
+      const pathParts = oldPath.split('/')
+      pathParts[pathParts.length - 1] = newName
+      const newPath = pathParts.join('/')
+
+      const result = await this.execCommand(serverId, `mv "${oldPath}" "${newPath}"`)
+      if (result.success) {
+        return { success: true, data: { path: newPath } }
+      }
+      return { success: false, error: result.stderr || '重命名失败' }
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  }
+
+  /**
+   * 删除文件或目录（支持批量）
+   * @param {string} serverId - 服务器ID
+   * @param {string[]} paths - 路径数组
+   */
+  async delete(serverId, paths) {
+    try {
+      const results = []
+      const errors = []
+
+      for (const path of paths) {
+        const result = await this.execCommand(serverId, `rm -rf "${path}"`)
+        if (result.success) {
+          results.push(path)
+        } else {
+          errors.push({ path, error: result.stderr || '删除失败' })
+        }
+      }
+
+      if (errors.length > 0) {
+        return {
+          success: false,
+          error: `部分文件删除失败: ${errors.map(e => e.path).join(', ')}`,
+          data: { success: results, failed: errors }
+        }
+      }
+
+      return { success: true, data: { deleted: results } }
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
   }
 }
 

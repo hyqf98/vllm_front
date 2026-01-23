@@ -84,6 +84,11 @@ export async function getModels(platform, params = {}) {
 
     return result
   } catch (error) {
+    console.error(`获取 ${platform} 模型失败:`, error.message)
+    if (error.response) {
+      console.error('响应状态:', error.response.status)
+      console.error('响应数据:', error.response.data)
+    }
     return {
       success: false,
       error: error.message,
