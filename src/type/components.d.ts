@@ -54,6 +54,7 @@ declare module 'vue' {
     ElTag: typeof import('element-plus/es')['ElTag']
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     FileManager: typeof import('./../renderer/src/components/FileManager.vue')['default']
+    GPUProcessManager: typeof import('./../renderer/src/components/GPUProcessManager.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
   }

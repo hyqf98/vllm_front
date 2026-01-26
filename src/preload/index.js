@@ -100,6 +100,13 @@ const fileManagerAPI = {
     ipcRenderer.invoke('fileManager:delete', serverId, paths)
 }
 
+// GPU 进程管理API
+const gpuAPI = {
+  getProcesses: (serverId) => ipcRenderer.invoke('gpu:getProcesses', serverId),
+  killProcess: (serverId, pid) => ipcRenderer.invoke('gpu:killProcess', serverId, pid),
+  killBatchProcesses: (serverId, pids) => ipcRenderer.invoke('gpu:killBatchProcesses', serverId, pids)
+}
+
 contextBridge.exposeInMainWorld('api', {
   ssh: sshAPI,
   service: serviceAPI,
@@ -109,7 +116,8 @@ contextBridge.exposeInMainWorld('api', {
   modelHub: modelHubAPI,
   modelTest: modelTestAPI,
   datasource: datasourceAPI,
-  fileManager: fileManagerAPI
+  fileManager: fileManagerAPI,
+  gpu: gpuAPI
 })
 
 // 暴露 electron 对象用于事件监听（主要用于下载进度和模型测试流式输出）

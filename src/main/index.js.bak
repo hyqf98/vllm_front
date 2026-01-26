@@ -59,7 +59,6 @@ async function ensureServerLoaded(serverId) {
   // 先检查是否已经在 ssh-manager 中
   const existingServer = sshManager.getServerById(serverId)
   if (existingServer) {
-    console.log(`[ensureServerLoaded] 服务器已在 ssh-manager 中: ${serverId}`)
     return existingServer
   }
 

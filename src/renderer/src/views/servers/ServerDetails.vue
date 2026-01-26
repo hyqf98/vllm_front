@@ -161,6 +161,18 @@
 
             <!-- GPU 信息 -->
             <div v-else class="hardware-content">
+              <!-- GPU 操作栏 -->
+              <div v-if="serverInfo?.gpus && serverInfo.gpus.length > 0" class="gpu-actions">
+                <el-button
+                  type="primary"
+                  size="small"
+                  :icon="Monitor"
+                  @click="showGPUProcessManager = true"
+                >
+                  查看进程
+                </el-button>
+              </div>
+
               <div v-if="serverInfo?.gpus && serverInfo.gpus.length > 0" class="gpu-container">
                 <div v-for="(gpu, index) in serverInfo.gpus" :key="index" class="gpu-item">
                   <el-descriptions :column="1" border>
@@ -431,6 +443,14 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- GPU 进程管理对话框 -->
+    <GPUProcessManager
+      v-model:visible="showGPUProcessManager"
+      :server-id="server?.id"
+      :server-name="server?.name"
+      :gpus="serverInfo?.gpus || []"
+    />
   </div>
 </template>
 
@@ -440,8 +460,9 @@ import { useRouter, useRoute } from 'vue-router'
 import { useServerStore } from '@renderer/store/serverStore'
 import { useEnvironmentStore } from '@renderer/store/environmentStore'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, Connection, Plus, Edit, Delete, FolderOpened } from '@element-plus/icons-vue'
+import { Refresh, Connection, Plus, Edit, Delete, FolderOpened, Monitor } from '@element-plus/icons-vue'
 import FileManager from '@renderer/components/FileManager.vue'
+import GPUProcessManager from '@renderer/components/GPUProcessManager.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -453,6 +474,9 @@ const connecting = ref(false)
 const serverInfo = ref({})
 const detailPageConnectionStatus = ref('disconnected')
 const hardwareTab = ref('cpu') // CPU/GPU 选项卡
+
+// GPU 进程管理相关
+const showGPUProcessManager = ref(false)
 
 // 环境管理相关
 const envDialogVisible = ref(false)
@@ -1349,6 +1373,14 @@ onUnmounted(async () => {
     .hardware-content {
       display: flex;
       flex-direction: column;
+    }
+
+    .gpu-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #e4e7ed;
     }
 
     .no-hardware-info {

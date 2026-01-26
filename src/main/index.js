@@ -59,7 +59,6 @@ async function ensureServerLoaded(serverId) {
   // 先检查是否已经在 ssh-manager 中
   const existingServer = sshManager.getServerById(serverId)
   if (existingServer) {
-    console.log(`[ensureServerLoaded] 服务器已在 ssh-manager 中: ${serverId}`)
     return existingServer
   }
 
@@ -695,6 +694,39 @@ function setupIPCHandlers() {
     try {
       await ensureServerLoaded(serverId)
       const result = await sshManager.delete(serverId, paths)
+      return result
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  })
+
+  // GPU 进程管理：获取 GPU 进程列表
+  ipcMain.handle('gpu:getProcesses', async (event, serverId) => {
+    try {
+      await ensureServerLoaded(serverId)
+      const result = await sshManager.getGPUProcesses(serverId)
+      return result
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  })
+
+  // GPU 进程管理：终止单个进程
+  ipcMain.handle('gpu:killProcess', async (event, serverId, pid) => {
+    try {
+      await ensureServerLoaded(serverId)
+      const result = await sshManager.killGPUProcess(serverId, pid)
+      return result
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  })
+
+  // GPU 进程管理：批量终止进程
+  ipcMain.handle('gpu:killBatchProcesses', async (event, serverId, pids) => {
+    try {
+      await ensureServerLoaded(serverId)
+      const result = await sshManager.killGPUBatchProcesses(serverId, pids)
       return result
     } catch (error) {
       return { success: false, error: error.message }

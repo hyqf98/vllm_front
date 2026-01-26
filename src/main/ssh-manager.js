@@ -1324,60 +1324,27 @@ class SSHManager {
     // 等待进程启动
     await new Promise(resolve => setTimeout(resolve, 3000))
 
-    // 从命令中提取关键信息来查找进程ID
-    const pathMatch = cleanCommand.match(/(?:vllm serve|lmdeploy serve api_server)\s+(\S+)/)
-    const searchKeyword = pathMatch ? pathMatch[1] : 'vllm'
+    // 使用更健壮的方式检查服务是否成功启动
+    // 结合端口检查和进程检查，类似 checkServiceRealStatus 的逻辑
+    const statusConfig = { port, startCommand }
+    const statusResult = await this.checkServiceRealStatus(serverId, statusConfig)
 
-    // 使用多种方式查找进程
-    const searchCommands = [
-      `pgrep -f "${searchKeyword}"`,
-      `ps aux | grep "${searchKeyword}" | grep -v grep | awk '{print $2}'`,
-      `ps aux | grep "vllm serve" | grep -v grep | awk '{print $2}'`,
-      `ps aux | grep "lmdeploy serve" | grep -v grep | awk '{print $2}'`
-    ]
-
-    let foundPid = null
-    for (const cmd of searchCommands) {
-      try {
-        const psResult = await this.execCommand(serverId, cmd)
-
-        if (psResult.success && psResult.stdout.trim()) {
-          const pids = psResult.stdout.trim().split('\n').filter(p => p.trim())
-
-          if (pids.length > 0) {
-            // 取最后一个PID
-            const pid = parseInt(pids[pids.length - 1], 10)
-
-            // 验证进程是否还在运行
-            const checkResult = await this.checkServiceStatus(serverId, pid)
-
-            if (checkResult.running) {
-              foundPid = pid
-              break
-            }
-          }
-        }
-      } catch (error) {
-        // 继续尝试下一个搜索命令
-      }
-    }
-
-    if (foundPid) {
+    if (statusResult.running && statusResult.pid) {
       return {
         success: true,
-        pid: foundPid,
+        pid: statusResult.pid,
         message: '服务启动成功'
       }
     }
 
-    // 如果所有方式都找不到进程，检查日志文件
+    // 如果服务未运行，检查日志文件获取更多信息
     try {
       const logResult = await this.execCommand(serverId, `tail -100 ${logPath}`)
       if (logResult.success && logResult.stdout) {
         throw new Error(`服务启动失败，未能找到运行中的进程。\n日志内容:\n${logResult.stdout}`)
       }
     } catch (error) {
-      // 日志读取失败
+      // 日志读取失败或日志内容已在上面的 throw 中处理
     }
 
     throw new Error('服务启动失败，未能找到运行中的进程')
@@ -3393,6 +3360,357 @@ class SSHManager {
       }
 
       return { success: true, data: { deleted: results } }
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  }
+
+  // ==================== GPU 进程管理 ====================
+
+  /**
+   * 检测服务器显卡类型并获取 GPU 进程列表
+   * @param {string} serverId - 服务器ID
+   * @returns {Promise<{success: boolean, gpuType: string, processes: array, error: string}>}
+   */
+  async getGPUProcesses(serverId) {
+    try {
+      const server = this.getServerById(serverId)
+      if (!server) {
+        return { success: false, error: '服务器不存在' }
+      }
+
+      // 检测显卡类型并获取进程
+      const gpuDetection = [
+        { type: 'nvidia', command: 'command -v nvidia-smi' },
+        { type: 'amd', command: 'command -v rocm-smi' },
+        { type: 'intel', command: 'command -v intel_gpu_top' }
+      ]
+
+      let detectedType = null
+
+      // 检测显卡类型
+      for (const gpu of gpuDetection) {
+        const checkResult = await this.execCommand(serverId, gpu.command)
+        if (checkResult.success && checkResult.stdout.trim()) {
+          detectedType = gpu.type
+          break
+        }
+      }
+
+      if (!detectedType) {
+        return {
+          success: true,
+          gpuType: null,
+          processes: [],
+          error: '未检测到支持的显卡类型（需要 nvidia-smi、rocm-smi 或 intel_gpu_top）'
+        }
+      }
+
+      // 根据显卡类型获取进程
+      let processes = []
+
+      if (detectedType === 'nvidia') {
+        processes = await this._getNvidiaProcesses(serverId)
+      } else if (detectedType === 'amd') {
+        processes = await this._getAMDProcesses(serverId)
+      } else if (detectedType === 'intel') {
+        processes = await this._getIntelProcesses(serverId)
+      }
+
+      return {
+        success: true,
+        gpuType: detectedType,
+        processes
+      }
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  }
+
+  /**
+   * 获取 NVIDIA GPU 进程
+   * @param {string} serverId - 服务器ID
+   * @returns {Promise<array>}
+   */
+  async _getNvidiaProcesses(serverId) {
+    const processes = []
+
+    try {
+      // 使用 nvidia-smi 查询进程
+      const queryCmd = 'nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null'
+      const result = await this.execCommand(serverId, queryCmd)
+
+      if (!result.success || !result.stdout.trim()) {
+        return processes
+      }
+
+      const lines = result.stdout.trim().split('\n')
+
+      for (const line of lines) {
+        const trimmedLine = line.trim()
+        if (!trimmedLine) continue
+
+        // 解析 CSV 格式: pid,memory_mb
+        const parts = trimmedLine.split(',')
+        if (parts.length >= 2) {
+          const pid = parseInt(parts[0].trim(), 10)
+          const memoryMB = parseInt(parts[1].trim(), 10)
+
+          if (pid && !isNaN(memoryMB)) {
+            // 获取进程命令
+            const cmdResult = await this.execCommand(serverId, `ps -p ${pid} -o user,comm --no-headers 2>/dev/null || echo "unknown"`)
+            const userCmd = cmdResult.success ? cmdResult.stdout.trim() : 'unknown'
+            const cmdParts = userCmd.split(/\s+/)
+            const user = cmdParts[0] || 'unknown'
+            const command = cmdParts.slice(1).join(' ') || 'unknown'
+
+            processes.push({
+              pid,
+              command,
+              memoryUsed: memoryMB * 1024 * 1024, // 转换为字节
+              memoryFormatted: this._formatMemory(memoryMB * 1024 * 1024),
+              gpuId: 0,
+              user
+            })
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error getting NVIDIA processes:', error)
+    }
+
+    return processes
+  }
+
+  /**
+   * 获取 AMD GPU 进程
+   * @param {string} serverId - 服务器ID
+   * @returns {Promise<array>}
+   */
+  async _getAMDProcesses(serverId) {
+    const processes = []
+
+    try {
+      // 使用 rocm-smi 查询进程
+      const queryCmd = 'rocm-smi --showmemuse --showpid 2>/dev/null'
+      const result = await this.execCommand(serverId, queryCmd)
+
+      if (!result.success || !result.stdout.trim()) {
+        return processes
+      }
+
+      const lines = result.stdout.split('\n')
+      let currentGPU = 0
+
+      for (const line of lines) {
+        const trimmedLine = line.trim()
+
+        // 检测 GPU 编号
+        const gpuMatch = trimmedLine.match(/GPU\s*\[(\d+)\]/)
+        if (gpuMatch) {
+          currentGPU = parseInt(gpuMatch[1], 10)
+          continue
+        }
+
+        // 解析进程信息
+        // 格式: PID: 12345 或类似
+        const pidMatch = trimmedLine.match(/PID\s*:?\s*(\d+)/i)
+        if (pidMatch) {
+          const pid = parseInt(pidMatch[1], 10)
+
+          // 尝试获取显存信息
+          const memMatch = trimmedLine.match(/(\d+)\s*(MB|GB)/i)
+          let memoryUsed = 0
+          if (memMatch) {
+            const value = parseFloat(memMatch[1])
+            const unit = memMatch[2].toUpperCase()
+            memoryUsed = unit === 'GB' ? value * 1024 * 1024 * 1024 : value * 1024 * 1024
+          }
+
+          // 获取进程命令
+          const cmdResult = await this.execCommand(serverId, `ps -p ${pid} -o user,comm --no-headers 2>/dev/null || echo "unknown"`)
+          const userCmd = cmdResult.success ? cmdResult.stdout.trim() : 'unknown'
+          const cmdParts = userCmd.split(/\s+/)
+          const user = cmdParts[0] || 'unknown'
+          const command = cmdParts.slice(1).join(' ') || 'unknown'
+
+          processes.push({
+            pid,
+            command,
+            memoryUsed,
+            memoryFormatted: memoryUsed > 0 ? this._formatMemory(memoryUsed) : 'N/A',
+            gpuId: currentGPU,
+            user
+          })
+        }
+      }
+    } catch (error) {
+      console.error('Error getting AMD processes:', error)
+    }
+
+    return processes
+  }
+
+  /**
+   * 获取 Intel GPU 进程
+   * @param {string} serverId - 服务器ID
+   * @returns {Promise<array>}
+   */
+  async _getIntelProcesses(serverId) {
+    const processes = []
+
+    try {
+      // Intel GPU 的进程信息比较难获取，尝试使用 intel_gpu_top 的 JSON 输出
+      const queryCmd = 'intel_gpu_top -J 2>/dev/null'
+      const result = await this.execCommand(serverId, queryCmd)
+
+      if (!result.success || !result.stdout.trim()) {
+        // 如果 JSON 输出失败，返回空数组
+        return processes
+      }
+
+      // 解析 JSON 输出
+      try {
+        const data = JSON.parse(result.stdout)
+        // 解析 Intel JSON 格式的进程信息
+        // 注意：具体格式取决于 intel_gpu_top 版本
+        if (data && data.engines) {
+          for (const [engineName, engineData] of Object.entries(data.engines)) {
+            if (engineData && engineData.running_processes) {
+              for (const proc of engineData.running_processes) {
+                // 获取进程命令
+                const cmdResult = await this.execCommand(serverId, `ps -p ${proc.pid} -o user,comm --no-headers 2>/dev/null || echo "unknown"`)
+                const userCmd = cmdResult.success ? cmdResult.stdout.trim() : 'unknown'
+                const cmdParts = userCmd.split(/\s+/)
+                const user = cmdParts[0] || 'unknown'
+                const command = cmdParts.slice(1).join(' ') || 'unknown'
+
+                processes.push({
+                  pid: proc.pid,
+                  command,
+                  memoryUsed: proc.memory_bytes || 0,
+                  memoryFormatted: proc.memory_bytes ? this._formatMemory(proc.memory_bytes) : 'N/A',
+                  gpuId: 0,
+                  user
+                })
+              }
+            }
+          }
+        }
+      } catch (parseError) {
+        console.error('Error parsing Intel GPU JSON:', parseError)
+      }
+    } catch (error) {
+      console.error('Error getting Intel processes:', error)
+    }
+
+    return processes
+  }
+
+  /**
+   * 格式化显存大小
+   * @param {number} bytes - 字节数
+   * @returns {string} 格式化后的字符串
+   */
+  _formatMemory(bytes) {
+    if (!bytes || bytes === 0) return '0 B'
+
+    const units = ['B', 'KB', 'MB', 'GB', 'TB']
+    let size = bytes
+    let unitIndex = 0
+
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024
+      unitIndex++
+    }
+
+    return `${size.toFixed(2)} ${units[unitIndex]}`
+  }
+
+  /**
+   * 终止单个 GPU 进程
+   * @param {string} serverId - 服务器ID
+   * @param {number} pid - 进程ID
+   * @returns {Promise<{success: boolean, error: string}>}
+   */
+  async killGPUProcess(serverId, pid) {
+    try {
+      const server = this.getServerById(serverId)
+      if (!server) {
+        return { success: false, error: '服务器不存在' }
+      }
+
+      // 发送 SIGTERM 先尝试优雅终止
+      const termResult = await this.execCommand(serverId, `kill -15 ${pid} 2>/dev/null`)
+
+      // 等待一小段时间
+      await new Promise(resolve => setTimeout(resolve, 500))
+
+      // 检查进程是否还在
+      const checkResult = await this.execCommand(serverId, `ps -p ${pid} -o pid= 2>/dev/null`)
+
+      if (checkResult.success && checkResult.stdout.trim()) {
+        // 如果进程还在，使用 SIGKILL 强制终止
+        const killResult = await this.execCommand(serverId, `kill -9 ${pid} 2>/dev/null`)
+
+        if (!killResult.success) {
+          return { success: false, error: killResult.stderr || '终止进程失败' }
+        }
+      }
+
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  }
+
+  /**
+   * 批量终止 GPU 进程
+   * @param {string} serverId - 服务器ID
+   * @param {number[]} pids - 进程ID数组
+   * @returns {Promise<{success: boolean, killed: array, failed: array, error: string}>}
+   */
+  async killGPUBatchProcesses(serverId, pids) {
+    try {
+      const server = this.getServerById(serverId)
+      if (!server) {
+        return { success: false, error: '服务器不存在' }
+      }
+
+      const killed = []
+      const failed = []
+
+      // 并发终止进程（限制并发数）
+      const batchSize = 5
+
+      for (let i = 0; i < pids.length; i += batchSize) {
+        const batch = pids.slice(i, i + batchSize)
+
+        const results = await Promise.allSettled(
+          batch.map(async (pid) => {
+            const result = await this.killGPUProcess(serverId, pid)
+            return { pid, result }
+          })
+        )
+
+        for (const r of results) {
+          if (r.status === 'fulfilled') {
+            if (r.value.result.success) {
+              killed.push(r.value.pid)
+            } else {
+              failed.push({ pid: r.value.pid, error: r.value.result.error })
+            }
+          } else {
+            failed.push({ pid: r.value?.pid, error: '执行失败' })
+          }
+        }
+      }
+
+      return {
+        success: true,
+        killed,
+        failed: failed.map(f => `${f.pid}(${f.error || '未知错误'})`)
+      }
     } catch (error) {
       return { success: false, error: error.message }
     }

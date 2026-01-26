@@ -16,7 +16,7 @@ const customServerId = ref('')
 const customLogPath = ref('')
 const logContent = ref('')
 const loading = ref(false)
-const autoRefresh = ref(false)
+const autoRefresh = ref(true)
 const refreshInterval = ref(null)
 const logLines = ref(100)
 
@@ -126,6 +126,11 @@ onMounted(async () => {
     selectedServiceId.value = services.value[0].id
     // 手动触发获取日志
     await fetchLogs()
+  }
+
+  // 默认启动自动刷新
+  if (autoRefresh.value) {
+    startAutoRefresh()
   }
 })
 

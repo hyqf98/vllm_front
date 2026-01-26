@@ -736,11 +736,11 @@ const handleDelete = async (service) => {
 
 // 启动服务
 const handleStart = async (service) => {
-  const loadingMsg = ElMessage({
+  // 显示提示信息，2秒后自动隐藏
+  ElMessage({
     message: '正在启动服务，请稍候...',
     type: 'info',
-    duration: 0,
-    showClose: false
+    duration: 2000
   })
 
   serviceStore.updateServiceStatus(service.id, 'starting')
@@ -749,7 +749,6 @@ const handleStart = async (service) => {
     // 获取环境信息
     const env = environmentStore.getEnvironmentById(service.environmentId)
     if (!env) {
-      loadingMsg.close()
       serviceStore.updateServiceStatus(service.id, 'error')
       ElMessage.error('环境信息不存在')
       return
@@ -758,7 +757,6 @@ const handleStart = async (service) => {
     // 获取服务器信息
     const server = servers.value.find(s => s.id === env.serverId)
     if (!server) {
-      loadingMsg.close()
       serviceStore.updateServiceStatus(service.id, 'error')
       ElMessage.error('服务器信息不存在')
       return
@@ -773,8 +771,6 @@ const handleStart = async (service) => {
       serviceName: service.name
     })
 
-    loadingMsg.close()
-
     if (result.success) {
       serviceStore.updateServiceStatus(service.id, 'running', result.data.pid)
       ElMessage.success('服务启动成功')
@@ -783,7 +779,6 @@ const handleStart = async (service) => {
       ElMessage.error(`启动失败: ${result.error}`)
     }
   } catch (error) {
-    loadingMsg.close()
     serviceStore.updateServiceStatus(service.id, 'error')
     ElMessage.error(`启动失败: ${error.message}`)
   }
@@ -791,11 +786,11 @@ const handleStart = async (service) => {
 
 // 停止服务
 const handleStop = async (service) => {
-  const loadingMsg = ElMessage({
+  // 显示提示信息，2秒后自动隐藏
+  ElMessage({
     message: '正在停止服务，请稍候...',
     type: 'info',
-    duration: 0,
-    showClose: false
+    duration: 2000
   })
 
   serviceStore.updateServiceStatus(service.id, 'stopping')
@@ -804,7 +799,6 @@ const handleStop = async (service) => {
     // 获取环境信息
     const env = environmentStore.getEnvironmentById(service.environmentId)
     if (!env) {
-      loadingMsg.close()
       serviceStore.updateServiceStatus(service.id, 'running')
       ElMessage.error('环境信息不存在')
       return
@@ -813,7 +807,6 @@ const handleStop = async (service) => {
     // 获取服务器信息
     const server = servers.value.find(s => s.id === env.serverId)
     if (!server) {
-      loadingMsg.close()
       serviceStore.updateServiceStatus(service.id, 'running')
       ElMessage.error('服务器信息不存在')
       return
@@ -826,8 +819,6 @@ const handleStop = async (service) => {
       service.startCommand
     )
 
-    loadingMsg.close()
-
     if (result.success) {
       serviceStore.updateServiceStatus(service.id, 'stopped', null)
       ElMessage.success(result.data.message || '服务已停止')
@@ -836,7 +827,6 @@ const handleStop = async (service) => {
       ElMessage.error(`停止失败: ${result.error}`)
     }
   } catch (error) {
-    loadingMsg.close()
     serviceStore.updateServiceStatus(service.id, 'running')
     ElMessage.error(`停止失败: ${error.message}`)
   }
