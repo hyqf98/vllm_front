@@ -5,6 +5,7 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { promises as fs } from 'fs'
+import cryptoManager from './security/crypto.js'
 
 class DataManager {
   constructor() {
@@ -14,6 +15,8 @@ class DataManager {
     this.dataDir = join(this.userHomePath, '.vllm_front')
     // 写入锁，用于防止并发写入同一文件
     this.writeLocks = new Map()
+    // 需要加密的模块名称列表
+    this.encryptedModules = ['servers']
   }
 
   /**
@@ -85,6 +88,7 @@ class DataManager {
   async readData(moduleName, defaultValue = null) {
     const filePath = this.getDataFilePath(moduleName)
     const backupFilePath = filePath + '.bak'
+    const needsDecryption = this.encryptedModules.includes(moduleName)
 
     try {
       // 确保目录存在
@@ -97,7 +101,16 @@ class DataManager {
         return defaultValue
       }
 
-      return JSON.parse(content)
+      let data = JSON.parse(content)
+
+      // 如果需要解密，解密敏感字段
+      if (needsDecryption && Array.isArray(data)) {
+        data = cryptoManager.decryptServerList(data)
+      } else if (needsDecryption && data.servers) {
+        data.servers = cryptoManager.decryptServerList(data.servers)
+      }
+
+      return data
     } catch (error) {
       // 文件不存在或读取失败，返回默认值
       if (error.code === 'ENOENT') {
@@ -110,11 +123,19 @@ class DataManager {
         // 尝试从备份恢复
         try {
           const backupContent = await fs.readFile(backupFilePath, 'utf-8')
-          const backupData = JSON.parse(backupContent)
+          let backupData = JSON.parse(backupContent)
           console.log(`[DataManager] 从备份恢复数据 [${moduleName}]`)
 
           // 恢复成功，写回主文件
           await fs.writeFile(filePath, backupContent, 'utf-8')
+
+          // 解密备份数据
+          if (needsDecryption && Array.isArray(backupData)) {
+            backupData = cryptoManager.decryptServerList(backupData)
+          } else if (needsDecryption && backupData.servers) {
+            backupData.servers = cryptoManager.decryptServerList(backupData.servers)
+          }
+
           return backupData
         } catch (backupError) {
           console.error(`[DataManager] 备份文件也损坏或不存在 [${moduleName}]`)
@@ -129,6 +150,14 @@ class DataManager {
 
               // 保存修复后的内容
               await fs.writeFile(filePath, fixedContent, 'utf-8')
+
+              // 解密修复的数据
+              if (needsDecryption && Array.isArray(fixedData)) {
+                fixedData = cryptoManager.decryptServerList(fixedData)
+              } else if (needsDecryption && fixedData.servers) {
+                fixedData.servers = cryptoManager.decryptServerList(fixedData.servers)
+              }
+
               return fixedData
             }
           } catch (fixError) {
@@ -186,6 +215,7 @@ class DataManager {
     const filePath = this.getDataFilePath(moduleName)
     // 为每个模块使用唯一的临时文件，进一步减少冲突
     const tempFilePath = filePath + '.' + Date.now() + '.tmp'
+    const needsEncryption = this.encryptedModules.includes(moduleName)
 
     await this.acquireLock(moduleName)
 
@@ -193,10 +223,23 @@ class DataManager {
       // 确保目录存在
       await this.ensureDataDir()
 
+      // 如果需要加密，先加密敏感字段
+      let dataToWrite = data
+      if (needsEncryption) {
+        if (Array.isArray(data)) {
+          dataToWrite = cryptoManager.encryptServerList(data)
+        } else if (data.servers && Array.isArray(data.servers)) {
+          dataToWrite = {
+            ...data,
+            servers: cryptoManager.encryptServerList(data.servers)
+          }
+        }
+      }
+
       // 序列化数据
       let content
       try {
-        content = JSON.stringify(data, null, 2)
+        content = JSON.stringify(dataToWrite, null, 2)
       } catch (serializeError) {
         throw new Error(`数据序列化失败: ${serializeError.message}`)
       }
@@ -221,7 +264,7 @@ class DataManager {
       return { success: true }
     } catch (error) {
       console.error(`[DataManager] 写入数据失败 [${moduleName}]:`, error)
-      
+
       // 清理临时文件
       try {
         await fs.unlink(tempFilePath)
